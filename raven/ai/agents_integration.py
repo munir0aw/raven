@@ -638,11 +638,13 @@ async def handle_ai_request_async(
 								if raw_assistant.get("tool_calls"):
 									assistant_message["tool_calls"] = raw_assistant["tool_calls"]
 
-								messages = [
-									{"role": "system", "content": agent.instructions},
-									{"role": "user", "content": str(full_input)},
-									assistant_message,
-								]
+								# Rebuild messages: system + conversation history + current user msg + assistant
+								messages = [{"role": "system", "content": agent.instructions}]
+								if conversation_history:
+									for _msg in conversation_history:
+										messages.append({"role": _msg["role"], "content": _msg["content"]})
+								messages.append({"role": "user", "content": message})
+								messages.append(assistant_message)
 
 								# Add tool results — use plain string content (not list of dicts)
 								for result in tool_results:

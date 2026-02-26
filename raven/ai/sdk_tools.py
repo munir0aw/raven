@@ -51,7 +51,12 @@ def create_raven_tools(bot) -> list[FunctionTool]:
 						function_path = "raven.ai.sdk_tools.handle_create_document"
 					elif function_doc.type == "Delete Document":
 						function_path = "raven.ai.sdk_tools.handle_delete_document"
-					# Add other standard types as needed
+					elif function_doc.type == "Get Multiple Documents":
+						function_path = "raven.ai.sdk_tools.handle_get_multiple_documents"
+					elif function_doc.type == "Submit Document":
+						function_path = "raven.ai.sdk_tools.handle_submit_document"
+					elif function_doc.type == "Cancel Document":
+						function_path = "raven.ai.sdk_tools.handle_cancel_document"
 					else:
 						continue
 
@@ -519,8 +524,14 @@ def handle_get_list(
 		# Get the meta for this doctype to validate fields
 		meta = frappe.get_meta(reference_doctype)
 		valid_fields = ["name", "creation", "modified", "modified_by", "owner", "docstatus"]
+
+		# Exclude field types that have no database column (child tables, layout fields, etc.)
+		from frappe.model import no_value_fields, table_fields
+
+		non_db_fieldtypes = set(no_value_fields) | set(table_fields)
 		for df in meta.fields:
-			valid_fields.append(df.fieldname)
+			if df.fieldtype not in non_db_fieldtypes:
+				valid_fields.append(df.fieldname)
 
 		# Set default fields if not provided
 		if not fields:
@@ -547,6 +558,7 @@ def handle_get_list(
 
 		# If filters provided, make sure field names are valid
 		if filters and isinstance(filters, dict):
+			# Dict-format filters: {field: value} or {"field operator": value}
 			cleaned_filters = {}
 			invalid_filter_fields = []
 
@@ -564,8 +576,27 @@ def handle_get_list(
 
 				# Add to warning message
 				filter_warning = f"Filter fields {', '.join(invalid_filter_fields)} do not exist in DocType '{reference_doctype}' and were ignored."
-				warning = f"{warning}\n{filter_warning}" if warning else filter_warning
+				warning = f"{warning}
+{filter_warning}" if warning else filter_warning
 
+		elif filters and isinstance(filters, list):
+			# List-format filters: [[field, operator, value], ...]
+			cleaned_filters = []
+			invalid_filter_fields = []
+
+			for filter_item in filters:
+				if isinstance(filter_item, (list, tuple)) and len(filter_item) >= 2:
+					base_field = filter_item[0]
+					if base_field in valid_fields:
+						cleaned_filters.append(filter_item)
+					else:
+						invalid_filter_fields.append(base_field)
+
+			filters = cleaned_filters
+			if invalid_filter_fields:
+				filter_warning = f"Filter fields {', '.join(invalid_filter_fields)} do not exist in DocType '{reference_doctype}' and were ignored."
+				warning = f"{warning}
+{filter_warning}" if warning else filter_warning
 		# Get list of documents with validated fields
 		result = frappe.get_all(
 			reference_doctype,
@@ -742,11 +773,15 @@ def handle_get_document(document_id, reference_doctype=None):
 					if not key.startswith("_") and not callable(getattr(doc, key))
 				}
 
-			# Get valid fields for reference
+			# Get valid fields for reference (exclude non-DB field types)
 			meta = frappe.get_meta(reference_doctype)
 			valid_fields = ["name", "creation", "modified", "modified_by", "owner", "docstatus"]
+			from frappe.model import no_value_fields, table_fields
+
+			non_db_fieldtypes = set(no_value_fields) | set(table_fields)
 			for df in meta.fields:
-				valid_fields.append(df.fieldname)
+				if df.fieldtype not in non_db_fieldtypes:
+					valid_fields.append(df.fieldname)
 
 			return {
 				"success": True,
@@ -761,4 +796,191 @@ def handle_get_document(document_id, reference_doctype=None):
 
 	except Exception as e:
 		frappe.log_error("SDK Functions Debug", f"Error in handle_get_document: {str(e)}")
+		return {"success": False, "error": str(e)}
+
+def handle_create_document(reference_doctype=None, **kwargs):
+	"""
+	Create a new document
+
+	Args:
+	    reference_doctype (str): DocType to create (provided by function configuration)
+	    **kwargs: Fields for the new document
+
+	Returns:
+	    dict: Created document data
+	"""
+	try:
+		if not reference_doctype:
+			reference_doctype = frappe.flags.get("current_function_doctype")
+
+		if not reference_doctype:
+			return {"success": False, "error": "No reference doctype provided."}
+
+		if not frappe.db.exists("DocType", reference_doctype):
+			return {"success": False, "error": f"DocType '{reference_doctype}' does not exist."}
+
+		doc = frappe.get_doc({"doctype": reference_doctype, **kwargs})
+		doc.insert()
+		frappe.db.commit()
+
+		import datetime
+
+		doc_dict = doc.as_dict()
+		for key, value in doc_dict.items():
+			if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+				doc_dict[key] = str(value)
+
+		return {
+			"success": True,
+			"result": doc_dict,
+			"message": f"{reference_doctype} created successfully with ID '{doc.name}'.",
+		}
+	except Exception as e:
+		frappe.log_error("SDK Functions Debug", f"Error in handle_create_document: {str(e)}")
+		return {"success": False, "error": str(e)}
+
+
+def handle_delete_document(document_id=None, reference_doctype=None):
+	"""
+	Delete a document
+
+	Args:
+	    document_id (str): ID of the document to delete
+	    reference_doctype (str): DocType of the document (provided by function configuration)
+
+	Returns:
+	    dict: Result of deletion
+	"""
+	try:
+		if not reference_doctype:
+			reference_doctype = frappe.flags.get("current_function_doctype")
+
+		if not reference_doctype:
+			return {"success": False, "error": "No reference doctype provided."}
+
+		if not frappe.db.exists(reference_doctype, document_id):
+			return {
+				"success": False,
+				"error": f"Document '{document_id}' not found in DocType '{reference_doctype}'.",
+			}
+
+		frappe.delete_doc(reference_doctype, document_id, force=True)
+		frappe.db.commit()
+
+		return {"success": True, "message": f"Document '{document_id}' deleted successfully."}
+	except Exception as e:
+		frappe.log_error("SDK Functions Debug", f"Error in handle_delete_document: {str(e)}")
+		return {"success": False, "error": str(e)}
+
+
+def handle_get_multiple_documents(document_ids=None, reference_doctype=None):
+	"""
+	Get multiple documents by their IDs
+
+	Args:
+	    document_ids (list): List of document IDs to retrieve
+	    reference_doctype (str): DocType of the documents (provided by function configuration)
+
+	Returns:
+	    dict: Retrieved documents and any not-found IDs
+	"""
+	try:
+		if not reference_doctype:
+			reference_doctype = frappe.flags.get("current_function_doctype")
+
+		if not reference_doctype:
+			return {"success": False, "error": "No reference doctype provided."}
+
+		if not frappe.db.exists("DocType", reference_doctype):
+			return {"success": False, "error": f"DocType '{reference_doctype}' does not exist."}
+
+		if not document_ids:
+			return {"success": False, "error": "No document IDs provided."}
+
+		import datetime
+
+		results = []
+		not_found = []
+		for doc_id in document_ids:
+			if frappe.db.exists(reference_doctype, doc_id):
+				doc = frappe.get_doc(reference_doctype, doc_id)
+				doc.check_permission()
+				doc_dict = doc.as_dict()
+				for key, value in doc_dict.items():
+					if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+						doc_dict[key] = str(value)
+				results.append(doc_dict)
+			else:
+				not_found.append(doc_id)
+
+		response = {"success": True, "result": results}
+		if not_found:
+			response["not_found"] = not_found
+		return response
+	except Exception as e:
+		frappe.log_error("SDK Functions Debug", f"Error in handle_get_multiple_documents: {str(e)}")
+		return {"success": False, "error": str(e)}
+
+
+def handle_submit_document(document_id=None, reference_doctype=None):
+	"""
+	Submit a document
+
+	Args:
+	    document_id (str): ID of the document to submit
+	    reference_doctype (str): DocType of the document (provided by function configuration)
+
+	Returns:
+	    dict: Result of submission
+	"""
+	try:
+		if not reference_doctype:
+			reference_doctype = frappe.flags.get("current_function_doctype")
+
+		if not reference_doctype:
+			return {"success": False, "error": "No reference doctype provided."}
+
+		if not frappe.db.exists(reference_doctype, document_id):
+			return {
+				"success": False,
+				"error": f"Document '{document_id}' not found in DocType '{reference_doctype}'.",
+			}
+
+		doc = frappe.get_doc(reference_doctype, document_id)
+		frappe.submit(doc)
+		return {"success": True, "message": f"Document '{document_id}' submitted successfully."}
+	except Exception as e:
+		frappe.log_error("SDK Functions Debug", f"Error in handle_submit_document: {str(e)}")
+		return {"success": False, "error": str(e)}
+
+
+def handle_cancel_document(document_id=None, reference_doctype=None):
+	"""
+	Cancel a submitted document
+
+	Args:
+	    document_id (str): ID of the document to cancel
+	    reference_doctype (str): DocType of the document (provided by function configuration)
+
+	Returns:
+	    dict: Result of cancellation
+	"""
+	try:
+		if not reference_doctype:
+			reference_doctype = frappe.flags.get("current_function_doctype")
+
+		if not reference_doctype:
+			return {"success": False, "error": "No reference doctype provided."}
+
+		if not frappe.db.exists(reference_doctype, document_id):
+			return {
+				"success": False,
+				"error": f"Document '{document_id}' not found in DocType '{reference_doctype}'.",
+			}
+
+		doc = frappe.get_doc(reference_doctype, document_id)
+		doc.cancel()
+		return {"success": True, "message": f"Document '{document_id}' cancelled successfully."}
+	except Exception as e:
+		frappe.log_error("SDK Functions Debug", f"Error in handle_cancel_document: {str(e)}")
 		return {"success": False, "error": str(e)}
