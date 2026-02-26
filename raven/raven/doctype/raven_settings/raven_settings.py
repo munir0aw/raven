@@ -27,6 +27,7 @@ class RavenSettings(Document):
 		enable_ai_integration: DF.Check
 		enable_google_apis: DF.Check
 		enable_local_llm: DF.Check
+		enable_mistral: DF.Check
 		enable_openai_services: DF.Check
 		enable_video_calling_via_livekit: DF.Check
 		google_processor_location: DF.Literal["us", "eu"]
@@ -37,6 +38,7 @@ class RavenSettings(Document):
 		livekit_url: DF.Data | None
 		local_llm_api_url: DF.Data | None
 		local_llm_provider: DF.Literal["LM Studio", "Ollama", "LocalAI", "OpenAI Compatible"]
+		mistral_api_key: DF.Password | None
 		oauth_client: DF.Link | None
 		openai_api_key: DF.Password | None
 		openai_compatible_api_key: DF.Password | None

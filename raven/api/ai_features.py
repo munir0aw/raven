@@ -71,7 +71,7 @@ def test_llm_configuration(
 	provider: str = "OpenAI", api_url: str = None, local_llm_provider: str = None
 ):
 	"""
-	Test LLM configuration (OpenAI or Local LLM)
+	Test LLM configuration (OpenAI, Mistral, or Local LLM)
 	"""
 	frappe.has_permission(doctype="Raven Settings", ptype="write", throw=True)
 
@@ -129,5 +129,49 @@ def test_llm_configuration(
 				"models": [{"id": m.id} for m in models.data[:5]],  # Return first 5 models
 			}
 
+		elif provider == "Mistral":
+			settings = frappe.get_single("Raven Settings")
+			api_key = settings.get_password("mistral_api_key")
+			if not api_key:
+				return {"success": False, "message": "Mistral API Key is not configured in Raven Settings"}
+
+			client = openai.OpenAI(api_key=api_key, base_url="https://api.mistral.ai/v1")
+			models = client.models.list()
+			return {
+				"success": True,
+				"message": "Successfully connected to Mistral AI",
+				"models": [{"id": m.id} for m in models.data],
+			}
+
 	except Exception as e:
 		return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+@frappe.whitelist()
+def get_mistral_available_models():
+	"""
+	API to get the available Mistral models
+	"""
+	frappe.has_permission(doctype="Raven Bot", ptype="read", throw=True)
+
+	settings = frappe.get_single("Raven Settings")
+	if not settings.enable_mistral:
+		return []
+
+	api_key = settings.get_password("mistral_api_key")
+	if not api_key:
+		return []
+
+	try:
+		client = openai.OpenAI(api_key=api_key, base_url="https://api.mistral.ai/v1")
+		models = client.models.list()
+
+		# Filter to chat-capable models (exclude embedding/moderation models)
+		excluded_keywords = ["embed", "moderation"]
+		chat_models = [
+			m.id for m in models.data if not any(kw in m.id for kw in excluded_keywords)
+		]
+		return sorted(chat_models)
+	except Exception as e:
+		frappe.log_error(f"Error fetching Mistral models: {str(e)}", "Mistral Models Error")
+		return []

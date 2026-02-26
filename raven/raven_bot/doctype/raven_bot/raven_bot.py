@@ -43,7 +43,7 @@ class RavenBot(Document):
 		is_ai_bot: DF.Check
 		is_standard: DF.Check
 		model: DF.Data | None
-		model_provider: DF.Literal["OpenAI", "Local LLM"]
+		model_provider: DF.Literal["OpenAI", "Local LLM", "Mistral"]
 		module: DF.Link | None
 		openai_assistant_id: DF.Data | None
 		openai_vector_store_id: DF.Data | None
@@ -111,9 +111,9 @@ class RavenBot(Document):
 				else:
 					self.update_openai_assistant()
 			else:
-				# For Local LLM or future Agents SDK, no assistant needed
+				# For Local LLM, Mistral, or future providers, no assistant needed
 				if self.openai_assistant_id:
-					# Clear assistant ID if switching from OpenAI to Local LLM
+					# Clear assistant ID if switching away from OpenAI
 					self.db_set("openai_assistant_id", None)
 					return
 
@@ -121,10 +121,9 @@ class RavenBot(Document):
 		if self.is_ai_bot and not self.openai_assistant_id:
 			# Only create OpenAI assistant if using OpenAI provider (not for Agents SDK)
 			if self.model_provider == "OpenAI":
-				# Skip assistant creation for Local LLM
 				self.create_openai_assistant()
-			elif self.model_provider == "Local LLM":
-				# For Local LLM, we don't need an OpenAI assistant
+			elif self.model_provider in ("Local LLM", "Mistral"):
+				# For Local LLM and Mistral, we don't need an OpenAI assistant
 				return
 
 	def on_trash(self):
@@ -138,8 +137,8 @@ class RavenBot(Document):
 
 	def create_openai_assistant(self):
 		# Create an OpenAI Assistant for the bot (legacy - being phased out for Agents SDK)
-		# Check again to ensure we're not creating for Local LLM
-		if self.model_provider == "Local LLM":
+		# Only for OpenAI provider
+		if self.model_provider != "OpenAI":
 			return
 
 		client = get_open_ai_client()
@@ -191,8 +190,8 @@ class RavenBot(Document):
 		if not self.is_ai_bot:
 			return
 
-		# Don't update assistant for Local LLM bots
-		if self.model_provider == "Local LLM":
+		# Only update assistant for OpenAI bots
+		if self.model_provider != "OpenAI":
 			return
 
 		client = get_open_ai_client()

@@ -72,6 +72,22 @@ class RavenAgentManager:
 			self.provider = OpenAIProvider(
 				openai_client=client, use_responses=False  # Force use of chat/completions endpoint
 			)
+
+		elif self.bot_doc.model_provider == "Mistral" and self.settings.enable_mistral:
+			# Mistral AI — OpenAI-compatible chat completions endpoint
+			api_key = self.settings.get_password("mistral_api_key")
+			if not api_key:
+				frappe.throw(_("Mistral API key is not configured in Raven Settings"))
+
+			client = AsyncOpenAI(
+				api_key=api_key,
+				base_url="https://api.mistral.ai/v1",
+			)
+
+			self.provider = OpenAIProvider(
+				openai_client=client, use_responses=False  # Mistral uses chat/completions
+			)
+
 		else:
 			# Standard OpenAI client
 			api_key = self.settings.get_password("openai_api_key")
@@ -166,11 +182,11 @@ class RavenAgentManager:
 					f"Error adding Code Interpreter: {str(e)}\n{traceback.format_exc()}", "Code Interpreter Error"
 				)
 
-		# Only add conversation file tool for OpenAI, not Local LLM (content is pre-extracted for Local LLM)
+		# Only add conversation file tool for OpenAI, not Local LLM/Mistral (content is pre-extracted)
 		if (
 			self.file_handler
 			and self.file_handler.conversation_files
-			and self.bot_doc.model_provider != "Local LLM"
+			and self.bot_doc.model_provider not in ("Local LLM", "Mistral")
 		):
 			conversation_file_tool = self.file_handler.create_file_analysis_tool()
 			if conversation_file_tool:
@@ -348,8 +364,8 @@ class RavenAgentManager:
 
 	def _filter_tools_for_provider(self) -> list[Tool]:
 		"""Filter tools based on the provider capabilities"""
-		if self.bot_doc.model_provider == "Local LLM":
-			# Filter out hosted tools that are not supported with ChatCompletions API
+		if self.bot_doc.model_provider in ("Local LLM", "Mistral"):
+			# Filter out hosted tools that are only supported by OpenAI
 			filtered_tools = []
 			hosted_tool_types = (
 				CodeInterpreterTool,
@@ -364,7 +380,7 @@ class RavenAgentManager:
 			for tool in self.tools:
 				if isinstance(tool, hosted_tool_types):
 					frappe.log_error(
-						f"Skipping hosted tool {tool.name} for Local LLM - not supported with ChatCompletions API",
+						f"Skipping hosted tool {tool.name} for {self.bot_doc.model_provider} - not supported with ChatCompletions API",
 						"Tool Filtering",
 					)
 				else:
@@ -511,6 +527,7 @@ async def handle_ai_request_async(
 
 		try:
 			# For Local LLM, always use direct API call to handle custom tool formats
+			# Mistral uses the SDK path (it is OpenAI-compatible for tool calling)
 			if bot.model_provider == "Local LLM":
 				raise TypeError("Force fallback for Local LLM to handle custom tool calls")
 
@@ -560,18 +577,16 @@ async def handle_ai_request_async(
 						+ "\n\nIMPORTANT: When asked to perform an action, use your tools immediately. Do not overthink. Keep responses brief and action-oriented. When asked to improve something, propose a specific solution immediately. File content from uploaded documents is automatically extracted and included in the conversation - DO NOT use the analyze_conversation_file tool for files that are already in the conversation context, just use the extracted content provided."
 					)
 
-					# Build messages array with proper conversation history
-					messages = [{"role": "system", "content": [{"type": "text", "text": enhanced_instructions}]}]
+					# Build messages with plain string content (compatible with Mistral and OpenAI)
+					messages = [{"role": "system", "content": enhanced_instructions}]
 
 					# Add conversation history as separate messages
 					if conversation_history:
 						for msg in conversation_history:
-							messages.append(
-								{"role": msg["role"], "content": [{"type": "text", "text": msg["content"]}]}
-							)
+							messages.append({"role": msg["role"], "content": msg["content"]})
 
 					# Add current user message
-					messages.append({"role": "user", "content": [{"type": "text", "text": message}]})
+					messages.append({"role": "user", "content": message})
 
 					# Create the API call with or without tools
 					api_params = {
@@ -612,21 +627,25 @@ async def handle_ai_request_async(
 
 							# If we have tool results, make another API call with the results
 							if tool_results:
-								# Add assistant message with tool calls
-								assistant_message = choice.message.model_dump()
-								# Fix assistant message content format
-								if isinstance(assistant_message.get("content"), str):
-									assistant_message["content"] = [{"type": "text", "text": assistant_message["content"]}]
+								# Build a clean assistant message with only the fields every provider accepts.
+								# model_dump() includes OpenAI-specific fields (refusal, annotations, audio,
+								# function_call) that Mistral and other providers reject with 422.
+								raw_assistant = choice.message.model_dump()
+								assistant_message = {"role": "assistant"}
+								# content may be None when there are tool calls
+								if raw_assistant.get("content") is not None:
+									assistant_message["content"] = raw_assistant["content"]
+								if raw_assistant.get("tool_calls"):
+									assistant_message["tool_calls"] = raw_assistant["tool_calls"]
 
 								messages = [
-									{"role": "system", "content": [{"type": "text", "text": agent.instructions}]},
-									{"role": "user", "content": [{"type": "text", "text": str(full_input)}]},
+									{"role": "system", "content": agent.instructions},
+									{"role": "user", "content": str(full_input)},
 									assistant_message,
 								]
 
-								# Add tool results
+								# Add tool results — use plain string content (not list of dicts)
 								for result in tool_results:
-									# Ensure output is a string
 									output_content = result["output"]
 									if not isinstance(output_content, str):
 										output_content = json.dumps(output_content)
@@ -634,7 +653,7 @@ async def handle_ai_request_async(
 									messages.append(
 										{
 											"role": "tool",
-											"content": [{"type": "text", "text": result["output"]}],
+											"content": output_content,
 											"tool_call_id": result["tool_call_id"],
 										}
 									)
@@ -760,7 +779,7 @@ async def handle_ai_request_async(
 		return {
 			"response": final_response,
 			"success": True,
-			"provider": bot.model_provider if hasattr(bot, "model_provider") else "OpenAI",
+			"provider": getattr(bot, "model_provider", "OpenAI"),
 		}
 
 	except Exception as e:
