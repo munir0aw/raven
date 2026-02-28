@@ -576,8 +576,7 @@ def handle_get_list(
 
 				# Add to warning message
 				filter_warning = f"Filter fields {', '.join(invalid_filter_fields)} do not exist in DocType '{reference_doctype}' and were ignored."
-				warning = f"{warning}
-{filter_warning}" if warning else filter_warning
+				warning = (warning + "\n" + filter_warning) if warning else filter_warning
 
 		elif filters and isinstance(filters, list):
 			# List-format filters: [[field, operator, value], ...]
@@ -595,8 +594,7 @@ def handle_get_list(
 			filters = cleaned_filters
 			if invalid_filter_fields:
 				filter_warning = f"Filter fields {', '.join(invalid_filter_fields)} do not exist in DocType '{reference_doctype}' and were ignored."
-				warning = f"{warning}
-{filter_warning}" if warning else filter_warning
+				warning = (warning + "\n" + filter_warning) if warning else filter_warning
 		# Get list of documents with validated fields
 		result = frappe.get_all(
 			reference_doctype,
